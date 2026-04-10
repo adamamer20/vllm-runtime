@@ -6,6 +6,7 @@ import asyncio
 from collections import deque
 import json
 import logging
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -166,8 +167,11 @@ class _ServerController:
             self._config.model_name,
         )
         logger.info("Managed vLLM server command: %s", " ".join(command))
+        child_env = os.environ.copy()
+        child_env["PYTHONUNBUFFERED"] = "1"
         self._process = await asyncio.create_subprocess_exec(
             *command,
+            env=child_env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -189,6 +193,7 @@ class _ServerController:
             ):
                 raise RuntimeError(
                     "Managed vLLM server exited before becoming ready."
+                    f" Return code: {self._process.returncode}."
                     f"{self._format_recent_logs()}"
                 )
 
@@ -246,7 +251,7 @@ class _ServerController:
 
     def _format_recent_logs(self) -> str:
         if not self._recent_logs:
-            return ""
+            return "\nRecent managed vLLM logs: <none captured>"
         return "\nRecent managed vLLM logs:\n" + "\n".join(self._recent_logs)
 
 
@@ -312,8 +317,16 @@ class _BaseRuntime:
                     ) from exc
                 await self._server.restart_after_transport_failure()
             except httpx.HTTPStatusError as exc:
+                returncode = (
+                    self._server._process.returncode  # noqa: SLF001
+                    if self._server._process is not None  # noqa: SLF001
+                    else None
+                )
                 raise RuntimeError(
-                    f"vLLM HTTP request failed ({exc.response.status_code}): {exc.response.text[:500]}"
+                    f"vLLM HTTP request failed ({exc.response.status_code}): "
+                    f"{exc.response.text[:500]}"
+                    f"{f' Server return code: {returncode}.' if returncode is not None else ''}"
+                    f"{self._server._format_recent_logs()}"  # noqa: SLF001
                 ) from exc
             except json.JSONDecodeError as exc:
                 raise RuntimeError("vLLM returned non-JSON response payload.") from exc
