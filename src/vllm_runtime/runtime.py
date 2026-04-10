@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import json
 import logging
 import re
@@ -86,6 +87,9 @@ class _ServerController:
         self._config = config
         self._process: asyncio.subprocess.Process | None = None
         self._owns_process = False
+        self._stdout_task: asyncio.Task[None] | None = None
+        self._stderr_task: asyncio.Task[None] | None = None
+        self._recent_logs: deque[str] = deque(maxlen=80)
 
     async def ensure_ready(self) -> None:
         server_key = self._config.resolved_base_url
@@ -128,6 +132,7 @@ class _ServerController:
             self._process.kill()
             await self._process.wait()
         finally:
+            await self._stop_log_tasks()
             self._process = None
             self._owns_process = False
 
@@ -160,12 +165,16 @@ class _ServerController:
             self._config.resolved_base_url,
             self._config.model_name,
         )
+        logger.info("Managed vLLM server command: %s", " ".join(command))
         self._process = await asyncio.create_subprocess_exec(
             *command,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         self._owns_process = True
+        self._recent_logs.clear()
+        self._stdout_task = self._spawn_log_reader(self._process.stdout, "stdout")
+        self._stderr_task = self._spawn_log_reader(self._process.stderr, "stderr")
 
     async def _wait_for_health(self, *, allow_warmup: bool) -> None:
         deadline = perf_counter() + self._config.startup_timeout_seconds
@@ -178,7 +187,10 @@ class _ServerController:
                 and self._process is not None
                 and self._process.returncode is not None
             ):
-                raise RuntimeError("Managed vLLM server exited before becoming ready.")
+                raise RuntimeError(
+                    "Managed vLLM server exited before becoming ready."
+                    f"{self._format_recent_logs()}"
+                )
 
             await asyncio.sleep(self._config.healthcheck_interval_seconds)
 
@@ -188,6 +200,7 @@ class _ServerController:
             )
         raise RuntimeError(
             f"Timed out waiting for vLLM runtime at {self._config.resolved_base_url}."
+            f"{self._format_recent_logs() if self._config.mode == 'managed' else ''}"
         )
 
     async def _is_healthy(self) -> bool:
@@ -198,6 +211,43 @@ class _ServerController:
             return response.status_code == HTTP_OK
         except Exception:
             return False
+
+    def _spawn_log_reader(
+        self,
+        stream: asyncio.StreamReader | None,
+        label: str,
+    ) -> asyncio.Task[None] | None:
+        if stream is None:
+            return None
+        return asyncio.create_task(self._read_stream(stream, label))
+
+    async def _read_stream(
+        self,
+        stream: asyncio.StreamReader,
+        label: str,
+    ) -> None:
+        while True:
+            line = await stream.readline()
+            if not line:
+                break
+            text = line.decode("utf-8", errors="replace").rstrip()
+            if not text:
+                continue
+            entry = f"[{label}] {text}"
+            self._recent_logs.append(entry)
+            logger.info("managed-vllm %s %s", self._config.port, entry)
+
+    async def _stop_log_tasks(self) -> None:
+        tasks = [task for task in (self._stdout_task, self._stderr_task) if task]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._stdout_task = None
+        self._stderr_task = None
+
+    def _format_recent_logs(self) -> str:
+        if not self._recent_logs:
+            return ""
+        return "\nRecent managed vLLM logs:\n" + "\n".join(self._recent_logs)
 
 
 @dataclass(slots=True)
