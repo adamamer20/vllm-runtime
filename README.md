@@ -1,10 +1,79 @@
 # vllm-runtime
 
-`vllm-runtime` is a standalone, HTTP-first, OpenAI-compatible runtime wrapper for vLLM with managed and external server modes.
+`vllm-runtime` is a standalone, HTTP-first, OpenAI-compatible runtime wrapper for vLLM and llama.cpp (`llama-server`) with managed and external server modes.
 
 Each runtime instance manages exactly one endpoint (one `resolved_base_url`). Managed server lifecycle ownership and startup locking are keyed by that resolved base URL.
 
 If you run different models for chat and embeddings, configure different endpoints (typically different ports). Reusing the same managed `host:port` for different models is not a supported topology.
+
+## llama.cpp managed server examples
+
+Local GGUF:
+
+```python
+import asyncio
+
+from vllm_runtime import (
+    LlamaCppChatRuntime,
+    LlamaCppModelConfig,
+    LlamaCppServerConfig,
+)
+
+
+async def main() -> None:
+    runtime = LlamaCppChatRuntime(
+        server_config=LlamaCppServerConfig(
+            mode="managed",
+            model_name="qwen-gguf",
+            model_path="/models/Qwen.gguf",
+            host="127.0.0.1",
+            port=8010,
+        ),
+        model_config=LlamaCppModelConfig(model_name="qwen-gguf"),
+    )
+    try:
+        result = await runtime.chat([{"role": "user", "content": "Hello"}])
+        print(result.content)
+    finally:
+        await runtime.close()
+
+
+asyncio.run(main())
+```
+
+Hugging Face GGUF:
+
+```python
+import asyncio
+
+from vllm_runtime import (
+    LlamaCppChatRuntime,
+    LlamaCppModelConfig,
+    LlamaCppServerConfig,
+)
+
+
+async def main() -> None:
+    runtime = LlamaCppChatRuntime(
+        server_config=LlamaCppServerConfig(
+            mode="managed",
+            model_name="qwen-gguf",
+            hf_repo="Qwen/Qwen2.5-7B-Instruct-GGUF",
+            hf_file="qwen2.5-7b-instruct-q4_k_m.gguf",
+            host="127.0.0.1",
+            port=8010,
+        ),
+        model_config=LlamaCppModelConfig(model_name="qwen-gguf"),
+    )
+    try:
+        result = await runtime.chat([{"role": "user", "content": "Hello"}])
+        print(result.content)
+    finally:
+        await runtime.close()
+
+
+asyncio.run(main())
+```
 
 ## Installation
 

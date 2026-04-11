@@ -4,15 +4,25 @@
 from __future__ import annotations
 
 import asyncio
+import types
 from typing import Any
 
 import httpx
 import pytest
 
-from vllm_runtime.config import VLLMModelConfig, VLLMRuntimeConfig, VLLMServerConfig
+from vllm_runtime.config import (
+    LlamaCppModelConfig,
+    LlamaCppServerConfig,
+    VLLMModelConfig,
+    VLLMRuntimeConfig,
+    VLLMServerConfig,
+)
 from vllm_runtime.runtime import (
+    LlamaCppChatRuntime,
+    LlamaCppEmbeddingRuntime,
     VLLMChatRuntime,
     VLLMEmbeddingRuntime,
+    _LlamaCppServerController,
     _ServerController,
     _get_server_lock,
 )
@@ -405,3 +415,271 @@ async def test_transport_retry_restarts_managed_server(monkeypatch: pytest.Monke
     assert payload == {"ok": True}
     assert attempts["count"] == EXPECTED_ATTEMPTS_AFTER_RETRY
     assert restart_calls["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_llama_managed_launch_command_for_local_gguf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    controller = _LlamaCppServerController(
+        LlamaCppServerConfig(
+            mode="managed",
+            model_name="chat-model",
+            model_path="/models/chat.gguf",
+            host="127.0.0.1",
+            port=9000,
+            ctx_size=8192,
+            parallel=2,
+            gpu_layers=40,
+            batch_size=1024,
+            ubatch_size=512,
+            flash_attn=True,
+        )
+    )
+
+    class _DummyProcess:
+        def __init__(self) -> None:
+            self.returncode = None
+            self.stdout = None
+            self.stderr = None
+
+        def terminate(self) -> None:
+            self.returncode = 0
+
+        def kill(self) -> None:
+            self.returncode = 0
+
+        async def wait(self) -> int:
+            return 0
+
+    async def _fake_is_healthy() -> bool:
+        return False
+
+    async def _fake_exec(*args: Any, **kwargs: Any) -> _DummyProcess:
+        captured["args"] = list(args)
+        captured["kwargs"] = kwargs
+        return _DummyProcess()
+
+    monkeypatch.setattr(controller, "_is_healthy", _fake_is_healthy)
+    monkeypatch.setattr(
+        "vllm_runtime.runtime.asyncio.create_subprocess_exec", _fake_exec
+    )
+
+    await controller._start_managed_server()  # noqa: SLF001
+    await controller.shutdown()
+
+    command = captured["args"]
+    assert command[0] == "/home/linuxbrew/.linuxbrew/bin/llama-server"
+    assert "--model" in command
+    assert "/models/chat.gguf" in command
+    assert "--host" in command and "127.0.0.1" in command
+    assert "--port" in command and "9000" in command
+    assert "--ctx-size" in command and "8192" in command
+    assert "--parallel" in command and "2" in command
+    assert "--gpu-layers" in command and "40" in command
+    assert "--batch-size" in command and "1024" in command
+    assert "--ubatch-size" in command and "512" in command
+    assert "--flash-attn" in command
+
+
+@pytest.mark.asyncio
+async def test_llama_managed_launch_command_for_hf_repo_and_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    controller = _LlamaCppServerController(
+        LlamaCppServerConfig(
+            mode="managed",
+            model_name="chat-model",
+            hf_repo="org/model-gguf",
+            hf_file="model-q4.gguf",
+            host="127.0.0.1",
+            port=9001,
+            embedding=True,
+            pooling="mean",
+        )
+    )
+
+    class _DummyProcess:
+        def __init__(self) -> None:
+            self.returncode = None
+            self.stdout = None
+            self.stderr = None
+
+        def terminate(self) -> None:
+            self.returncode = 0
+
+        def kill(self) -> None:
+            self.returncode = 0
+
+        async def wait(self) -> int:
+            return 0
+
+    async def _fake_is_healthy() -> bool:
+        return False
+
+    async def _fake_exec(*args: Any, **kwargs: Any) -> _DummyProcess:
+        captured["args"] = list(args)
+        captured["kwargs"] = kwargs
+        return _DummyProcess()
+
+    monkeypatch.setattr(controller, "_is_healthy", _fake_is_healthy)
+    monkeypatch.setattr(
+        "vllm_runtime.runtime.asyncio.create_subprocess_exec", _fake_exec
+    )
+
+    await controller._start_managed_server()  # noqa: SLF001
+    await controller.shutdown()
+
+    command = captured["args"]
+    assert command[0] == "/home/linuxbrew/.linuxbrew/bin/llama-server"
+    assert "--hf-repo" in command and "org/model-gguf" in command
+    assert "--hf-file" in command and "model-q4.gguf" in command
+    assert "--embedding" in command
+    assert "--pooling" in command and "mean" in command
+
+
+@pytest.mark.asyncio
+async def test_llama_readiness_uses_v1_health(monkeypatch: pytest.MonkeyPatch) -> None:
+    controller = _LlamaCppServerController(
+        LlamaCppServerConfig(
+            mode="external",
+            model_name="chat-model",
+            base_url="http://runtime.local/v1",
+        )
+    )
+    captured: dict[str, Any] = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            captured["timeout"] = timeout
+
+        async def __aenter__(self) -> _FakeAsyncClient:
+            return self
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: Any,
+        ) -> bool:
+            _ = exc_type
+            _ = exc
+            _ = tb
+            return False
+
+        async def get(self, url: str) -> types.SimpleNamespace:
+            captured["url"] = url
+            return types.SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr("vllm_runtime.runtime.httpx.AsyncClient", _FakeAsyncClient)
+    is_healthy = await controller._is_healthy()  # noqa: SLF001
+
+    assert is_healthy is True
+    assert captured["url"] == "http://runtime.local/v1/health"
+
+
+@pytest.mark.asyncio
+async def test_llama_chat_runtime_requests_chat_completions_and_schema_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    runtime = LlamaCppChatRuntime(
+        server_config=LlamaCppServerConfig(
+            mode="external",
+            model_name="chat-model",
+            base_url="http://runtime.local/v1",
+        ),
+        model_config=LlamaCppModelConfig(model_name="chat-model"),
+    )
+
+    async def _fake_post_json(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+        captured["endpoint"] = endpoint
+        captured["payload"] = payload
+        return {
+            "choices": [{"message": {"content": '{"title":"ok"}'}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            "model": "chat-model",
+        }
+
+    monkeypatch.setattr(runtime, "_post_json", _fake_post_json)
+    result = await runtime.chat(
+        [{"role": "user", "content": "hello"}],
+        response_format={"type": "json_object"},
+        json_schema={"type": "object", "properties": {"title": {"type": "string"}}},
+        grammar="<start> ::= object",
+        plain_content=False,
+    )
+    await runtime.close()
+
+    assert result.content == '{"title":"ok"}'
+    assert captured["endpoint"] == "chat/completions"
+    assert captured["payload"]["response_format"] == {"type": "json_object"}
+    assert captured["payload"]["json_schema"]["type"] == "object"
+    assert captured["payload"]["grammar"] == "<start> ::= object"
+
+
+@pytest.mark.asyncio
+async def test_llama_chat_runtime_fails_clearly_for_unsupported_structured_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = LlamaCppChatRuntime(
+        server_config=LlamaCppServerConfig(
+            mode="external",
+            model_name="chat-model",
+            base_url="http://runtime.local/v1",
+        ),
+        model_config=LlamaCppModelConfig(model_name="chat-model"),
+    )
+
+    async def _fake_post_json(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError(
+            "llama.cpp HTTP request failed (400): unknown field `json_schema`"
+        )
+
+    monkeypatch.setattr(runtime, "_post_json", _fake_post_json)
+    with pytest.raises(
+        RuntimeError, match="does not support required structured output fields"
+    ):
+        await runtime.chat(
+            [{"role": "user", "content": "hello"}],
+            response_format={"type": "json_object"},
+            json_schema={"type": "object"},
+            plain_content=False,
+        )
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_llama_embedding_runtime_posts_to_embeddings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    runtime = LlamaCppEmbeddingRuntime(
+        server_config=LlamaCppServerConfig(
+            mode="external",
+            model_name="embed-model",
+            base_url="http://runtime.local/v1",
+        ),
+        model_config=LlamaCppModelConfig(model_name="embed-model"),
+    )
+
+    async def _fake_post_json(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+        captured["endpoint"] = endpoint
+        captured["payload"] = payload
+        return {
+            "data": [
+                {"index": 1, "embedding": [2.0, 3.0]},
+                {"index": 0, "embedding": [0.5, 1.5]},
+            ]
+        }
+
+    monkeypatch.setattr(runtime, "_post_json", _fake_post_json)
+    vectors = await runtime.embed_texts(["a", "b"])
+    await runtime.close()
+
+    assert captured["endpoint"] == "embeddings"
+    assert captured["payload"]["model"] == "embed-model"
+    assert captured["payload"]["input"] == ["a", "b"]
+    assert vectors == [[0.5, 1.5], [2.0, 3.0]]
