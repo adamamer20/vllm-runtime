@@ -470,7 +470,7 @@ async def test_llama_managed_launch_command_for_local_gguf(
     await controller.shutdown()
 
     command = captured["args"]
-    assert command[0] == "/home/linuxbrew/.linuxbrew/bin/llama-server"
+    assert command[0].endswith("llama-server")
     assert "--model" in command
     assert "/models/chat.gguf" in command
     assert "--host" in command and "127.0.0.1" in command
@@ -480,7 +480,8 @@ async def test_llama_managed_launch_command_for_local_gguf(
     assert "--gpu-layers" in command and "40" in command
     assert "--batch-size" in command and "1024" in command
     assert "--ubatch-size" in command and "512" in command
-    assert "--flash-attn" in command
+    flash_attn_index = command.index("--flash-attn")
+    assert command[flash_attn_index + 1] == "on"
 
 
 @pytest.mark.asyncio
@@ -533,7 +534,7 @@ async def test_llama_managed_launch_command_for_hf_repo_and_file(
     await controller.shutdown()
 
     command = captured["args"]
-    assert command[0] == "/home/linuxbrew/.linuxbrew/bin/llama-server"
+    assert command[0].endswith("llama-server")
     assert "--hf-repo" in command and "org/model-gguf" in command
     assert "--hf-file" in command and "model-q4.gguf" in command
     assert "--embedding" in command

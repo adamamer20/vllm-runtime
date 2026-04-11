@@ -594,7 +594,7 @@ class _LlamaCppServerController:
         if self._config.ubatch_size is not None:
             command.extend(["--ubatch-size", str(self._config.ubatch_size)])
         if self._config.flash_attn:
-            command.append("--flash-attn")
+            command.extend(["--flash-attn", "on"])
         if self._config.embedding:
             command.append("--embedding")
         if self._config.pooling:

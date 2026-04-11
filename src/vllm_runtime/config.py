@@ -3,12 +3,33 @@
 from __future__ import annotations
 
 import os
+import shutil
 from typing import Literal
 
 from pydantic import BaseModel, Field, validator
 
 VLLMServerMode = Literal["managed", "external"]
 LlamaCppServerMode = Literal["managed", "external"]
+
+
+def _default_llama_server_binary() -> str:
+    """Resolve the most sensible llama-server binary for managed runtime use."""
+    explicit = (
+        os.getenv("LLAMA_CPP_SERVER_BINARY")
+        or os.getenv("LLAMA_CPP_CHAT_SERVER_BINARY")
+        or os.getenv("LLAMA_CPP_EMBEDDING_SERVER_BINARY")
+    )
+    candidates = [
+        explicit,
+        os.path.expanduser("~/src/llama.cpp/build-cuda/bin/llama-server"),
+        os.path.expanduser("~/.local/bin/llama-server"),
+        shutil.which("llama-server"),
+        "/home/linuxbrew/.linuxbrew/bin/llama-server",
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return "/home/linuxbrew/.linuxbrew/bin/llama-server"
 
 
 class VLLMServerConfig(BaseModel):
@@ -235,7 +256,7 @@ class LlamaCppServerConfig(BaseModel):
         description="Optional Hugging Face GGUF filename passed to --hf-file.",
     )
     server_binary: str = Field(
-        default="/home/linuxbrew/.linuxbrew/bin/llama-server",
+        default_factory=_default_llama_server_binary,
         description="Managed-mode llama-server executable path.",
     )
     ctx_size: int | None = Field(
