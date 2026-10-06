@@ -361,8 +361,9 @@ class VLLMChatRuntime(_BaseRuntime):
         guided_json: dict[str, Any] | None = None,
         chat_template_kwargs: dict[str, Any] | None = None,
         plain_content: bool = True,
+        raw_content: bool = False,
     ) -> VLLMChatResult:
-        """Submit a chat completion request and return sanitized content."""
+        """Submit chat; raw_content preserves generated text without sanitation."""
         effective_template_kwargs = {"enable_thinking": False}
         if chat_template_kwargs:
             effective_template_kwargs.update(chat_template_kwargs)
@@ -417,8 +418,9 @@ class VLLMChatRuntime(_BaseRuntime):
         )
 
         content = _extract_message_content(response_json)
-        content = _strip_think_tags(content)
-        if plain_content:
+        if not raw_content:
+            content = _strip_think_tags(content)
+        if plain_content and not raw_content:
             content, removed_meta = _sanitize_plain_content(content)
             if removed_meta:
                 logger.warning(
@@ -799,8 +801,9 @@ class LlamaCppChatRuntime(_LlamaCppBaseRuntime):
         json_schema: dict[str, Any] | None = None,
         grammar: str | None = None,
         plain_content: bool = True,
+        raw_content: bool = False,
     ) -> LlamaCppChatResult:
-        """Submit a chat completion request and return sanitized content."""
+        """Submit chat; raw_content preserves generated text without sanitation."""
         payload: dict[str, Any] = {
             "model": self.model_config.model_name,
             "messages": messages,
@@ -871,8 +874,9 @@ class LlamaCppChatRuntime(_LlamaCppBaseRuntime):
         )
 
         content = _extract_message_content(response_json)
-        content = _strip_think_tags(content)
-        if plain_content:
+        if not raw_content:
+            content = _strip_think_tags(content)
+        if plain_content and not raw_content:
             content, removed_meta = _sanitize_plain_content(content)
             if removed_meta:
                 logger.warning(

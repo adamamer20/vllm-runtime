@@ -4,7 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vllm-runtime"
-version = "0.1.0"
+version = "0.2.0"
+license = "MIT"
+license-files = ["LICENSE"]
 description = "HTTP-first OpenAI-compatible vLLM runtime with managed/external server lifecycle."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,6 +14,9 @@ dependencies = [
   "pydantic>=2.11.7",
   "httpx>=0.28.1",
 ]
+
+[project.urls]
+Repository = "https://github.com/adamamer20/vllm-runtime"
 
 [project.optional-dependencies]
 dev = [

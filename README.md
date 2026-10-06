@@ -6,6 +6,51 @@ Each runtime instance manages exactly one endpoint (one `resolved_base_url`). Ma
 
 If you run different models for chat and embeddings, configure different endpoints (typically different ports). Reusing the same managed `host:port` for different models is not a supported topology.
 
+## OCR and exact generated text
+
+Use `raw_content=True` with either chat runtime to preserve generated text,
+including whitespace, markup, `<think>` tags, and model commentary. The default
+chat mode continues to sanitize reasoning and meta-output. `raw_response` retains
+the parsed JSON response in both modes; it is not the original HTTP byte stream.
+
+For a resident OCR server, send concurrent requests to one external endpoint.
+The server owns GPU scheduling and continuous batching; the wrapper limits
+concurrent HTTP requests. Use `transport_retries=0` when an ambiguous failure must
+be recorded and inspected before another inference attempt.
+
+```python
+runtime = VLLMChatRuntime(
+    server_config=VLLMServerConfig(
+        mode="external", model_name="ocr", base_url="http://127.0.0.1:8000/v1",
+    ),
+    model_config=VLLMModelConfig(
+        model_name="ocr", temperature=0, top_p=1, max_tokens=8192,
+    ),
+    runtime_config=VLLMRuntimeConfig(
+        max_concurrent_requests=4, transport_retries=0,
+    ),
+)
+try:
+    result = await runtime.chat(
+        [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": image_data_url}},
+        ]}],
+        raw_content=True,
+    )
+    # Retain before parsing; generated text still needs source-quality validation.
+    generated_text = result.content
+finally:
+    await runtime.close()
+```
+
+Managed startup locking is local to one Python process. GPU leases, process
+supervision, source identities and durable receipts belong to the application.
+
+## License
+
+[MIT](LICENSE). The vLLM and llama.cpp engines and model weights have their own
+licenses and are installed separately.
+
 ## llama.cpp managed server examples
 
 Local GGUF:
